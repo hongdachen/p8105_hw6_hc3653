@@ -1,0 +1,238 @@
+---
+title: "p8105_hw6_hc3653"
+author: "Hongda Chen"
+date: "2025-12-02"
+output: html_document
+---
+
+```{r message=FALSE}
+library(tidyverse)
+library(broom)
+library(modelr)
+```
+
+# Problem 1
+
+```{r}
+homicide = 
+  read.csv("homicide-data(2).csv") %>%
+  janitor::clean_names()
+```
+
+```{r warning=FALSE}
+homicide_clean = homicide %>%
+  mutate(city_state = str_c(city, state, sep = ","),
+         solved = if_else(disposition == "Closed by arrest", 1, 0),
+         victim_age = as.numeric(victim_age)) %>%
+  filter(
+    !city_state %in% c("Dallas, TX", "Phoenix, AZ", "Kansas City, MO", "Tulsa, AL"),
+    victim_race %in% c("White", "Black")
+  )
+```
+
+```{r}
+baltimore = homicide_clean %>%
+  filter(city_state == "Baltimore,MD")
+
+baltimore_reg = 
+  glm(solved ~ victim_age + victim_sex + victim_race,
+      data = baltimore, 
+      family = binomial())
+
+baltimore_reg
+
+baltimore_tidy = 
+  broom::tidy(baltimore_reg, conf.int = TRUE, exponentiate = TRUE)
+
+baltimore_OR = baltimore_tidy %>%
+  filter(term == "victim_sexMale") %>%
+  select(estimate, conf.low, conf.high)
+
+baltimore_OR
+```
+
+```{r}
+unstatisfied_cities =
+  homicide_clean %>%
+  group_by(city_state) %>%
+  summarize(
+    sex_levels = n_distinct(victim_sex),
+    race_levels = n_distinct(victim_race)
+  ) %>%
+  filter(sex_levels < 2 | race_levels < 2) %>%
+  pull(city_state)
+
+all_cities_clean = homicide_clean %>% filter(!city_state %in% unstatisfied_cities)
+
+```
+
+```{r warning=FALSE}
+all_cities_reg = all_cities_clean %>% 
+  nest(data = -city_state) %>%
+  mutate(
+    model = map(data, ~ glm(
+      solved ~ victim_age + victim_sex + victim_race,
+      data = .x,
+      family = binomial()
+    )),
+    results = map(model, ~broom::tidy(.x, conf.int = TRUE, exponentiate = TRUE))
+  ) %>%
+  unnest(results) %>%
+  filter(term == "victim_sexMale") %>%
+  select(city_state, estimate, conf.low, conf.high)
+
+all_cities_reg
+```
+
+```{r}
+all_cities_plot =  all_cities_reg %>%
+  mutate(city_state = fct_reorder(city_state, estimate)) %>%
+  ggplot(aes(x = city_state, y = estimate, color = city_state)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = conf.low, ymax = conf.high)) +
+  labs(x = "City",
+       y = "Estimated ORs and CIs",
+       title = "Estimated ORs and CIs for solving homicides") +
+  theme(axis.text.x = element_text(size = 6 , angle = 60, hjust = 1)) +
+  theme(legend.position = "none")
+
+all_cities_plot
+```
+
+As we can see from the plot, most cities have ORs smaller than 1, which means it is more likely to solve homicides of female victims compared to male victims. Furthermore, some cities like Richmond, VA have wide confidence intervals, which means a lack of precision in the estimate, because of small sample size, large standard deviation and etc.
+
+# Problem 2
+
+```{r}
+library(p8105.datasets)
+data("weather_df")
+
+weather = weather_df %>% 
+  select(prcp, tmax, tmin) %>%
+  drop_na()
+```
+
+```{r}
+slr_model = lm(tmax ~ tmin + prcp, data = weather)
+
+slr_model
+
+glance(slr_model)
+
+r2 = glance(slr_model)$r.squared
+
+coefs = coef(slr_model)
+
+beta_ratio = coefs["tmin"]/coefs["prcp"]
+
+r2
+
+beta_ratio
+```
+
+```{r}
+set.seed(1)
+n_samp = 5000
+
+bootstrap_results = map_dfr(1:n_samp, ~{
+  boot_sample = weather %>% sample_frac(replace = TRUE)
+  model = lm(tmax ~ tmin + prcp, data = boot_sample)
+  
+  r2_bootstrap = glance(model)$r.squared
+  coefs_bootstrap = coef(model)
+  beta_ratio_bootstrap = coefs_bootstrap["tmin"]/coefs_bootstrap["prcp"]
+  
+  tibble(r2 = r2_bootstrap, beta_ratio = beta_ratio_bootstrap)
+})
+```
+
+```{r}
+ggplot(bootstrap_results, aes(x = r2)) +
+  geom_density() +
+  labs(x = "R^2 estimated",
+       title = "Distribution of R^2 estimated")
+```
+From the plot, we can see that the distribution peak at around 0.94, which
+means that the predictors explain about 94% of the variation. 
+```{r}
+ggplot(bootstrap_results, aes(x = beta_ratio)) +
+  geom_density() +
+  labs(x = "Estimate of beta1/beta2",
+       title = "Distribution of beta1/beta2 estimated")
+```
+From the plot, the distribution is left-skewed, peak at about -170, the distribution
+overall is not stable.
+```{r}
+CI_results = bootstrap_results %>%
+  summarise(
+    r2_lower = quantile(r2, 0.025),
+    r2_upper = quantile(r2, 0.975),
+    beta_ratio_lower = quantile(beta_ratio, 0.025),
+    beta_ratio_upper = quantile(beta_ratio, 0.975)
+  )
+CI_results
+```
+
+# Problem 3
+
+```{r}
+birthweight = read.csv("birthweight.csv") %>%
+  janitor::clean_names() %>%
+  mutate(
+    babysex = factor(babysex, labels = c("male", "female")),
+    frace = factor(frace),
+    malform = factor(malform, labels = c("absent", "present")),
+    mrace = factor(mrace)
+  ) %>%
+  drop_na()
+```
+
+```{r}
+model = lm(bwt ~ babysex + bhead + blength + delwt + fincome + frace +
+                  gaweeks + malform + menarche + mheight + momage + mrace +
+                  parity + pnumlbw + pnumsga + ppbmi + ppwt + smoken + wtgain,
+           data = birthweight)
+summary(model)
+# from the output, some variables with large p values are not appropriate. After removing these variables, we get the main model for this project.
+main_model = lm(bwt ~ babysex + bhead + blength + delwt + gaweeks + smoken,
+                data = birthweight)
+summary(main_model)
+```
+
+```{r}
+bw_pred = birthweight %>%
+  add_predictions(main_model) %>%
+  add_residuals(main_model)
+
+bw_pred %>%
+  ggplot(aes(pred, resid)) +
+  geom_point(alpha = 0.5) +
+  labs(title = "Residulas vs predictions")
+```
+
+```{r}
+model_A = lm(bwt ~ blength + gaweeks, data = birthweight)
+
+model_B = lm(bwt ~ (bhead + blength + babysex)^3, data = birthweight)
+
+```
+
+
+```{r}
+cv = crossv_mc(birthweight, n = 100)
+
+cv_rmse = function(f, df){
+  train = as_tibble(df$train)
+  test  = as_tibble(df$test)
+  sqrt(mean((test$bwt - predict(f(train), test))^2))
+}
+
+results = tibble(
+  main = map_dbl(cv$train, ~ cv_rmse(function(d) lm(bwt ~ gaweeks + blength + bhead + babysex + smoken + ppbmi, d), list(train = .x, test = cv$test[[1]]))),
+  A = map_dbl(cv$train, ~ cv_rmse(function(d) lm(bwt ~ blength + gaweeks, d), list(train = .x, test = cv$test[[1]]))),
+  B = map_dbl(cv$train, ~ cv_rmse(function(d) lm(bwt ~ (bhead + blength + babysex)^3, d), list(train = .x, test = cv$test[[1]])))
+)
+
+results %>% summarise(across(everything(), list(mean = mean, sd = sd)))
+```
+
